@@ -42,6 +42,7 @@ int vector_indexof(std::vector<T>& v, T needle)
     return -1;
 }
 
+HMODULE g_hModule;
 
 struct FConfig
 {
@@ -57,7 +58,7 @@ struct FConfig
         INIReader ini(path);
         if (ini.ParseError() != 0)
         {
-            ULog::Get().dprintln("Cannot read config file.");
+            ULog::Get().println("Cannot read config file.");
             return;
         }
         FovMul = ini.GetFloat("main", "fov-multiplier", FovMul);
@@ -102,6 +103,8 @@ void hk_CameraTick(FCameraData* pCamData, float frametime, LPVOID r8, LPVOID r9)
     tram_CameraTick(pCamData, frametime, r8, r9);
 
     pCameraData->Transform[3].y += Config.yOffset;
+
+    pCameraData = nullptr;
 }
 
 extern "C"
@@ -131,23 +134,39 @@ extern "C" float hk_ScalarInterp(LPVOID pIntermediates/*?*/, float target, float
         callers.push_back(ScalarInterpReturn);
     }
 
-    //switch (vector_indexof(callers, ScalarInterpReturn))
-    //{
-    //case ICALLER_INTERP_FOV:
-    //    target *= Config.FovMul;
-    //    break;
-    //case ICALLER_INTERP_MAXDIST:
-    //    target *= Config.distmul;
-    //    break;
-    //case ICALLER_INTERP_XOFFSET:
-    //    //if (!pCameraData->bHasLockon)
-    //    //{
-    //    //    target = Config.xoffset;
-    //    //}
-    //    break;
-    //default:
-    //    break;
-    //}
+    if (pCameraData)
+    {
+        UINT_PTR relAddress = UINT_PTR(pIntermediates) - UINT_PTR(pCameraData);
+
+        switch (relAddress)
+        {
+        case 0x39C:
+            //target -= Config.yOffset;
+            break;
+        default:
+            break;
+        }
+
+        //switch (vector_indexof(callers, ScalarInterpReturn))
+        //{
+        //case ICALLER_INTERP_FOV:
+        //    target *= Config.FovMul;
+        //    break;
+        //case ICALLER_INTERP_MAXDIST:
+        //    target *= Config.distmul;
+        //    break;
+        //case ICALLER_INTERP_XOFFSET:
+        //    //if (!pCameraData->bHasLockon)
+        //    //{
+        //    //    target = Config.xoffset;
+        //    //}
+        //    break;
+        //default:
+        //    break;
+        //}
+    }
+
+    // TDOO: replace these with intermediates memory offset and remove the memory scans for function callers
     if (UINT_PTR(ScalarInterpReturn) == InterpCallerFoV)
     {
         target *= Config.FovMul;
@@ -189,10 +208,43 @@ extern "C" float hk_GetInterpResult(float* p)
     //}
 
 
+    if (pCameraData)
+    {
+        UINT_PTR relAddress = UINT_PTR(p) - UINT_PTR(pCameraData);
+
+        switch (relAddress)
+        {
+        case 0x39C:
+            //return tram_GetInterpResult(p) - Config.yOffset;
+            break;
+        default:
+            break;
+        }
+
+        //switch (vector_indexof(callers, ScalarInterpReturn))
+        //{
+        //case ICALLER_INTERP_FOV:
+        //    target *= Config.FovMul;
+        //    break;
+        //case ICALLER_INTERP_MAXDIST:
+        //    target *= Config.distmul;
+        //    break;
+        //case ICALLER_INTERP_XOFFSET:
+        //    //if (!pCameraData->bHasLockon)
+        //    //{
+        //    //    target = Config.xoffset;
+        //    //}
+        //    break;
+        //default:
+        //    break;
+        //}
+    }
+
+
     if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffsetNoLockon)
     {
         // this doesn't affect the offset by itself but it can trigger the original code to set a variable that allow changing the offset later
-        return pCameraData->bHasLockon ? tram_GetInterpResult(p) : Config.xoffset;
+        return (pCameraData && pCameraData->bHasLockon) ? tram_GetInterpResult(p) : Config.xoffset;
     }
 
     if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffset)
@@ -214,12 +266,57 @@ glm::vec4* hk_PivotPos(LPVOID rcx, LPVOID rdx, LPVOID r8, float xOffset, float m
 glm::vec4* (*tram_PivotPosInterp)(LPVOID, LPVOID, LPVOID, LPVOID, LPVOID, LPVOID, float, float);
 glm::vec4* hk_PivotPosInterp(LPVOID rcx, LPVOID rdx, LPVOID r8, LPVOID r9, LPVOID s0, LPVOID s1, float s2, float s3)
 {
-    pCameraData->InterpSpeedX *= Config.PivotInterpMul;
-    pCameraData->InterpSpeedZ *= Config.PivotInterpMulZ;
+    if (pCameraData)
+    {
+        pCameraData->InterpSpeedX *= Config.PivotInterpMul;
+        pCameraData->InterpSpeedZ *= Config.PivotInterpMulZ;
+    }
     return tram_PivotPosInterp(rcx, rdx, r8, r9, s0, s1, s2, s3);
 }
 
+
+glm::vec4* (*tram_OffsetPivot)(LPVOID, LPVOID, float, LPVOID, LPVOID, LPVOID);
+glm::vec4* hk_OffsetPivot(LPVOID rcx, LPVOID rdx, float xmm2, LPVOID r9, LPVOID s0, LPVOID s1)
+{
+    glm::vec4* out = tram_OffsetPivot(rcx, rdx, xmm2, r9, s0, s1);
+    out->y += Config.yOffset;
+    return out;
+}
+
+bool CheckHook(LPVOID pTarget)
+{
+    LPVOID hkJmpTarget = GetJumpTargetFar(GetJumpTargetNear(pTarget));
+    if (hkJmpTarget == nullptr)
+    {
+        return false;
+    }
+    //ULog::Get().println("hook target %p", hkJmpTarget);
+    return IsCurrentModuleAddress(hkJmpTarget, g_hModule);
+}
+
 std::vector<UMinHook> Hooks;
+//std::vector<UMinHook*> PersistChkHooks;
+
+DWORD WINAPI ThreadCheckHook(LPVOID lpParam)
+{
+    for (;;)
+    {
+        for (UMinHook& hook : Hooks)
+        {
+            //ULog::Get().println("hook \"%s\" status: %s", hook.GetID(), CheckHook(hook.GetTarget()) ? "enabled" : "disabled");
+            bool bEnabled = CheckHook(hook.GetTarget());
+            if (!bEnabled && hook.IsEnabled())
+            {
+                ULog::Get().println("hook \"%s\" disabled unexpectedly. attempting to re-enable", hook.GetID());
+                hook.DisableImpl();
+                hook.EnableImpl();
+            }
+        }
+        Sleep(1000);
+    }
+
+    return 0;
+}
 
 DWORD WINAPI MainThread(LPVOID lpParam)
 {
@@ -227,7 +324,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     Sleep(3000);
     MH_Initialize();
 
-    ULog::Get().dprintln("config struct: %p", &Config);
+    ULog::Get().println("config struct: %p", &Config);
     Config.Read(TARGET_NAME ".ini");
 
     /* fov
@@ -352,6 +449,9 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         )
     );
 
+
+    CreateThread(0, 0, &ThreadCheckHook, 0, 0, 0);
+
     return 0;
 }
 
@@ -363,6 +463,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     if (ul_reason_for_call == DLL_PROCESS_ATTACH)
     {
         ULog::FileName = TARGET_NAME ".log";
+        g_hModule = hModule;
 
         ULog& log = ULog::Get();
         HMODULE hMinhook = LoadLibraryA("minhook.x64.dll");
