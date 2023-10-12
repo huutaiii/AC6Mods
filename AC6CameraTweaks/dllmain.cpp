@@ -93,6 +93,14 @@ struct FCameraData
 };
 FCameraData* pCameraData;
 
+enum struct EScalarOffset : UINT_PTR
+{
+    FOV = 0x50,
+    X_OFFSET = 0x220,
+    Y_OFFSET = 0x39C,
+    MAX_DISTANCE = 0x2F4,
+};
+
 float LockonInterp;
 
 void (*tram_CameraTick)(LPVOID, float, LPVOID, LPVOID);
@@ -439,6 +447,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     );
 
     // it's a virtual function so searching for the prologue seems to be the only option
+    // the game also sometimes rewrites the prologue of this function...
     Hooks.push_back(
         UMinHook(
             "CameraTick",
