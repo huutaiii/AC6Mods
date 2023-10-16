@@ -93,7 +93,7 @@ struct FCameraData
 };
 FCameraData* pCameraData;
 
-enum struct EScalarOffset : UINT_PTR
+enum struct EScalarOffset : INT_PTR
 {
     FOV = 0x50,
     X_OFFSET = 0x220,
@@ -144,12 +144,21 @@ extern "C" float hk_ScalarInterp(LPVOID pIntermediates/*?*/, float target, float
 
     if (pCameraData)
     {
-        UINT_PTR relAddress = UINT_PTR(pIntermediates) - UINT_PTR(pCameraData);
+        INT_PTR relAddress = UINT_PTR(pIntermediates) - UINT_PTR(pCameraData);
 
-        switch (relAddress)
+        switch (EScalarOffset(relAddress))
         {
-        case 0x39C:
-            //target -= Config.yOffset;
+        case EScalarOffset::FOV:
+            //target *= Config.FovMul;
+            break;
+        case EScalarOffset::X_OFFSET:
+            target += pCameraData->bHasLockon ? 0.f : Config.xoffset;
+            break;
+        case EScalarOffset::Y_OFFSET:
+            //target += Config.yOffset;
+            break;
+        case EScalarOffset::MAX_DISTANCE:
+            target *= Config.distmul;
             break;
         default:
             break;
@@ -177,11 +186,11 @@ extern "C" float hk_ScalarInterp(LPVOID pIntermediates/*?*/, float target, float
     // TDOO: replace these with intermediates memory offset and remove the memory scans for function callers
     if (UINT_PTR(ScalarInterpReturn) == InterpCallerFoV)
     {
-        target *= Config.FovMul;
+        //target *= Config.FovMul;
     }
     if (UINT_PTR(ScalarInterpReturn) == InterpCallerMaxDist)
     {
-        target *= Config.distmul;
+        //target *= Config.distmul;
     }
 
     float out = tram_ScalarInterp(pIntermediates, target, speed, r9, f, f1);
@@ -218,13 +227,17 @@ extern "C" float hk_GetInterpResult(float* p)
 
     if (pCameraData)
     {
-        UINT_PTR relAddress = UINT_PTR(p) - UINT_PTR(pCameraData);
+        INT_PTR relAddress = UINT_PTR(p) - UINT_PTR(pCameraData);
+        float out = tram_GetInterpResult(p);
 
-        switch (relAddress)
+        switch (EScalarOffset(relAddress))
         {
-        case 0x39C:
-            //return tram_GetInterpResult(p) - Config.yOffset;
-            break;
+        case EScalarOffset::Y_OFFSET:
+            return out;
+        case EScalarOffset::FOV:
+            return out * Config.FovMul;
+        //case EScalarOffset::MAX_DISTANCE:
+        //    return out * Config.distmul;
         default:
             break;
         }
@@ -252,12 +265,12 @@ extern "C" float hk_GetInterpResult(float* p)
     if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffsetNoLockon)
     {
         // this doesn't affect the offset by itself but it can trigger the original code to set a variable that allow changing the offset later
-        return (pCameraData && pCameraData->bHasLockon) ? tram_GetInterpResult(p) : Config.xoffset;
+        //return (pCameraData && pCameraData->bHasLockon) ? tram_GetInterpResult(p) : Config.xoffset;
     }
 
     if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffset)
     {
-        return lerp(Config.xoffset, tram_GetInterpResult(p), LockonInterp);
+        //return lerp(Config.xoffset, tram_GetInterpResult(p), LockonInterp);
     }
 
     return tram_GetInterpResult(p);
@@ -282,7 +295,7 @@ glm::vec4* hk_PivotPosInterp(LPVOID rcx, LPVOID rdx, LPVOID r8, LPVOID r9, LPVOI
     return tram_PivotPosInterp(rcx, rdx, r8, r9, s0, s1, s2, s3);
 }
 
-
+// WHERE THE FSCK DOES THIS COME FROM?
 glm::vec4* (*tram_OffsetPivot)(LPVOID, LPVOID, float, LPVOID, LPVOID, LPVOID);
 glm::vec4* hk_OffsetPivot(LPVOID rcx, LPVOID rdx, float xmm2, LPVOID r9, LPVOID s0, LPVOID s1)
 {
@@ -368,56 +381,56 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         )
     );
 
-    {
-        std::vector scan = MemPatternScan(
-            nullptr,
-            StringtoScanPattern("F3 0F 11 44 24 20 44 0F B6 8F 78 08 00 00 41 0F 28 D2 0F 28 CE 49 8B CE E8 ???????? 49 8B CE E8"),
-            false,
-            1
-        );
-        if (scan.size())
-        {
-            InterpCallerXOffset = (reinterpret_cast<UINT_PTR>(scan[0]) + 29);
-            ACallerInterpReXOffset = reinterpret_cast<UINT_PTR>(scan[0]) + 37;
+    //{
+    //    std::vector scan = MemPatternScan(
+    //        nullptr,
+    //        StringtoScanPattern("F3 0F 11 44 24 20 44 0F B6 8F 78 08 00 00 41 0F 28 D2 0F 28 CE 49 8B CE E8 ???????? 49 8B CE E8"),
+    //        false,
+    //        1
+    //    );
+    //    if (scan.size())
+    //    {
+    //        InterpCallerXOffset = (reinterpret_cast<UINT_PTR>(scan[0]) + 29);
+    //        ACallerInterpReXOffset = reinterpret_cast<UINT_PTR>(scan[0]) + 37;
 
-        }
-    }
-    {
-        std::vector scan = MemPatternScan(
-            nullptr,
-            StringtoScanPattern("E8 ???????? F3 0F 10 8F 18 02 00 00 F3 0F 5C C8 F3 0F 11 4C 24 30 8B 44 24 30 0F BA F0 1F"),
-            false,
-            1
-        );
-        if (scan.size())
-        {
-            ACallerInterpReXOffsetNoLockon = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
-        }
-    } 
-    {
-        std::vector scan = MemPatternScan(
-            nullptr,
-            StringtoScanPattern("E8 ???????? 48 8B 07 0F 57 FF 48 85 C0 74 0A"),
-            false,
-            1
-        );
-        if (scan.size())
-        {
-            InterpCallerMaxDist = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
-        }
-    } 
-    {
-        std::vector scan = MemPatternScan(
-            nullptr,
-            StringtoScanPattern("E8 ???????? 48 8B CE E8 CA 1E 01 00 F3 0F 58 83"),
-            false,
-            1
-        );
-        if (scan.size())
-        {
-            InterpCallerFoV = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
-        }
-    }
+    //    }
+    //}
+    //{
+    //    std::vector scan = MemPatternScan(
+    //        nullptr,
+    //        StringtoScanPattern("E8 ???????? F3 0F 10 8F 18 02 00 00 F3 0F 5C C8 F3 0F 11 4C 24 30 8B 44 24 30 0F BA F0 1F"),
+    //        false,
+    //        1
+    //    );
+    //    if (scan.size())
+    //    {
+    //        ACallerInterpReXOffsetNoLockon = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
+    //    }
+    //} 
+    //{
+    //    std::vector scan = MemPatternScan(
+    //        nullptr,
+    //        StringtoScanPattern("E8 ???????? 48 8B 07 0F 57 FF 48 85 C0 74 0A"),
+    //        false,
+    //        1
+    //    );
+    //    if (scan.size())
+    //    {
+    //        InterpCallerMaxDist = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
+    //    }
+    //} 
+    //{
+    //    std::vector scan = MemPatternScan(
+    //        nullptr,
+    //        StringtoScanPattern("E8 ???????? 48 8B CE E8 CA 1E 01 00 F3 0F 58 83"),
+    //        false,
+    //        1
+    //    );
+    //    if (scan.size())
+    //    {
+    //        InterpCallerFoV = (reinterpret_cast<UINT_PTR>(scan[0]) + 5);
+    //    }
+    //}
 
     /*
         armoredcore6.exe+6CDC0F - F3 0F11 44 24 20      - movss [rsp+20],xmm0
@@ -427,15 +440,15 @@ DWORD WINAPI MainThread(LPVOID lpParam)
         armoredcore6.exe+6CDC1E - 48 8D 4C 24 60        - lea rcx,[rsp+60]
         armoredcore6.exe+6CDC23 - E8 781E0000           - call armoredcore6.exe+6CFAA0
     */
-    Hooks.push_back(
-        UMinHook(
-            "PivotPos",
-            "F3 0F 11 44 24 20 0F 28 DF 4C 8B C3 48 8B D6 48 8D 4C 24 60 E8",
-            0x23 - 0x0f,
-            &hk_PivotPos,
-            (LPVOID*)(&tram_PivotPos)
-        )
-    );
+    //Hooks.push_back(
+    //    UMinHook(
+    //        "PivotPos",
+    //        "F3 0F 11 44 24 20 0F 28 DF 4C 8B C3 48 8B D6 48 8D 4C 24 60 E8",
+    //        0x23 - 0x0f,
+    //        &hk_PivotPos,
+    //        (LPVOID*)(&tram_PivotPos)
+    //    )
+    //);
 
     Hooks.push_back(
         UMinHook(
