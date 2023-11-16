@@ -132,9 +132,6 @@
       <EnableUAC>false</EnableUAC>
       <DelayLoadDLLs>minhook.x64.dll</DelayLoadDLLs>
     </Link>
-    <PostBuildEvent>
-      <Command>copy $(TargetDir)$(TargetName)$(TargetExt) "D:\games\Armored Core VI Fires of Rubicon\Game"</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -156,9 +153,6 @@
       <EnableUAC>false</EnableUAC>
       <DelayLoadDLLs>minhook.x64.dll</DelayLoadDLLs>
     </Link>
-    <PostBuildEvent>
-      <Command>copy $(TargetDir)$(TargetName)$(TargetExt) "D:\games\Armored Core VI Fires of Rubicon\Game"</Command>
-    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="framework.h" />
