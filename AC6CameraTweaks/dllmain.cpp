@@ -1,9 +1,14 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
 #include "pch.h"
 
+#define GLM_FORCE_SWIZZLE 1
+#include <glm/glm.hpp>
+
 #include <ModUtils.h>
 #include <MathUtils.h>
 #include <INIReader.h>
+
+#include <luajit/lua.hpp>
 
 #include <set>
 
@@ -43,15 +48,21 @@ int vector_indexof(std::vector<T>& v, T needle)
 }
 
 HMODULE g_hModule;
+lua_State *g_Lua;
 
 struct FConfig
 {
     float FovMul = 1.0f;
     float distmul = 1.0f;
     float xoffset = 0.0f;
+    float lockonOffsetMul = 1.f;
     float yOffset = 0.f;
     float PivotInterpMul = 1.f;
     float PivotInterpMulZ = 0.f;
+
+    glm::vec3 Offset = { 0.f, 0, 0 };
+
+    std::string DistLua = "d";
 
     void Read(std::string path)
     {
@@ -61,12 +72,15 @@ struct FConfig
             ULog::Get().println("Cannot read config file.");
             return;
         }
-        FovMul = ini.GetFloat("main", "fov-multiplier", FovMul);
-        distmul = ini.GetFloat("main", "distance-multiplier", distmul);
-        xoffset = ini.GetFloat("main", "freeaim-x-offset", xoffset);
-        yOffset = ini.GetFloat("main", "y-offset", yOffset);
-        PivotInterpMul = ini.GetFloat("main", "pivot-interpolation-multiplier", PivotInterpMul);
-        PivotInterpMulZ = ini.GetFloat("main", "pivot-interpolation-multiplier-z", PivotInterpMulZ);
+        FovMul = ini.GetFloat("common", "fov-multiplier", FovMul);
+        //distmul = ini.GetFloat("main", "distance-multiplier", distmul);
+        yOffset = ini.GetFloat("common", "y-offset", yOffset);
+        xoffset = ini.GetFloat("free-aim", "x-offset", xoffset);
+        lockonOffsetMul = ini.GetFloat("lock-on", "x-offset-multiplier", lockonOffsetMul);
+        PivotInterpMul = ini.GetFloat("pivot", "speed-multiplier", PivotInterpMul);
+        PivotInterpMulZ = ini.GetFloat("pivot", "speed-multiplier-z", PivotInterpMulZ);
+        DistLua = ini.Get("common", "distance", DistLua);
+        //Offset = ini.GetVec("common", "freeaim-offset", Offset);
 
         if (!(PivotInterpMulZ > 0.f))
         {
@@ -83,8 +97,12 @@ struct FCameraData
 
     PAD(0x10);
     glm::mat4 Transform;
-
-    PAD(0x215 - 0x50);
+    PAD(0x1E0 - 0x50);
+    union {
+        PAD(0x10);
+        glm::vec2 RotationEuler; // x: pitch, y: yaw
+    };
+    PAD(0x215 - 0x1F0);
     bool bHasLockon; // +215
     PAD(0x328 - 0x216);
     float InterpSpeedZ;
@@ -110,7 +128,7 @@ void hk_CameraTick(FCameraData* pCamData, float frametime, LPVOID r8, LPVOID r9)
     LockonInterp = InterpToF(LockonInterp, float(pCamData->bHasLockon), 1.f, frametime);
     tram_CameraTick(pCamData, frametime, r8, r9);
 
-    pCameraData->Transform[3].y += Config.yOffset;
+    //pCameraData->Transform[3].y += Config.yOffset;
 
     pCameraData = nullptr;
 }
@@ -149,17 +167,20 @@ extern "C" float hk_ScalarInterp(LPVOID pIntermediates/*?*/, float target, float
         switch (EScalarOffset(relAddress))
         {
         case EScalarOffset::FOV:
-            //target *= Config.FovMul;
+            target *= Config.FovMul;
             break;
         case EScalarOffset::X_OFFSET:
-            target += pCameraData->bHasLockon ? 0.f : Config.xoffset;
+            //target += pCameraData->bHasLockon ? 0.f : Config.xoffset;
             break;
         case EScalarOffset::Y_OFFSET:
             //target += Config.yOffset;
             break;
         case EScalarOffset::MAX_DISTANCE:
-            target *= Config.distmul;
+        {
+
+            //target *= Config.distmul;
             break;
+        }
         default:
             break;
         }
@@ -225,19 +246,37 @@ extern "C" float hk_GetInterpResult(float* p)
     //}
 
 
+    float out = tram_GetInterpResult(p);
     if (pCameraData)
     {
         INT_PTR relAddress = UINT_PTR(p) - UINT_PTR(pCameraData);
-        float out = tram_GetInterpResult(p);
 
         switch (EScalarOffset(relAddress))
         {
-        case EScalarOffset::Y_OFFSET:
+        //case EScalarOffset::Y_OFFSET:
+        //    return out;
+        //case EScalarOffset::FOV:
+        //    return out * Config.FovMul;
+        case EScalarOffset::MAX_DISTANCE:
+        {
+            lua_pushnumber(g_Lua, out);
+            lua_setglobal(g_Lua, "d");
+            lua_pushnumber(g_Lua, pCameraData->RotationEuler.x);
+            lua_setglobal(g_Lua, "pitch");
+            std::string script = "out=(" + Config.DistLua + ")";
+            if (luaL_loadbuffer(g_Lua, script.c_str(), script.size(), "dist") || lua_pcall(g_Lua, 0, 0, 0))
+            {
+                ULog::Get().dprintln("lua error: %s", lua_tostring(g_Lua, -1));
+                lua_pop(g_Lua, 1);
+            }
+            lua_getglobal(g_Lua, "out");
+            out = lua_tonumber(g_Lua, -1);
+            lua_pop(g_Lua, 1);
             return out;
-        case EScalarOffset::FOV:
-            return out * Config.FovMul;
-        //case EScalarOffset::MAX_DISTANCE:
-        //    return out * Config.distmul;
+        }
+        case EScalarOffset::X_OFFSET:
+            return lerp(Config.xoffset, out * Config.lockonOffsetMul, LockonInterp);
+            break;
         default:
             break;
         }
@@ -262,18 +301,8 @@ extern "C" float hk_GetInterpResult(float* p)
     }
 
 
-    if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffsetNoLockon)
-    {
-        // this doesn't affect the offset by itself but it can trigger the original code to set a variable that allow changing the offset later
-        //return (pCameraData && pCameraData->bHasLockon) ? tram_GetInterpResult(p) : Config.xoffset;
-    }
 
-    if (UINT_PTR(RA_GetInterpResult) == ACallerInterpReXOffset)
-    {
-        //return lerp(Config.xoffset, tram_GetInterpResult(p), LockonInterp);
-    }
-
-    return tram_GetInterpResult(p);
+    return out;
 }
 
 glm::vec4* (*tram_PivotPos)(LPVOID, LPVOID, LPVOID, float, float);
@@ -295,12 +324,25 @@ glm::vec4* hk_PivotPosInterp(LPVOID rcx, LPVOID rdx, LPVOID r8, LPVOID r9, LPVOI
     return tram_PivotPosInterp(rcx, rdx, r8, r9, s0, s1, s2, s3);
 }
 
-// WHERE THE FSCK DOES THIS COME FROM?
+
+/*
+armoredcore6.exe+6C6297 - 4C 8D 8D A0110000     - lea r9,[rbp+000011A0]
+armoredcore6.exe+6C629E - 41 0F28 D5            - movaps xmm2,xmm13
+armoredcore6.exe+6C62A2 - 48 8D 95 10140000     - lea rdx,[rbp+00001410]
+armoredcore6.exe+6C62A9 - 48 8B CF              - mov rcx,rdi
+armoredcore6.exe+6C62AC - E8 0F730000           - call armoredcore6.exe+6CD5C0
+*/
+constexpr char PATTERN_FN_PIVOT_OFFSET[] = "4C 8D 8D A0110000 41 0F28 D5 48 8D 95 10140000 48 8B CF E8";
+
 glm::vec4* (*tram_OffsetPivot)(LPVOID, LPVOID, float, LPVOID, LPVOID, LPVOID);
 glm::vec4* hk_OffsetPivot(LPVOID rcx, LPVOID rdx, float xmm2, LPVOID r9, LPVOID s0, LPVOID s1)
 {
     glm::vec4* out = tram_OffsetPivot(rcx, rdx, xmm2, r9, s0, s1);
     out->y += Config.yOffset;
+
+    //glm::mat4 rotation = glm::rotate(glm::mat4(1), pCameraData->RotationEuler.y, glm::vec3(0.f, 1.f, 0.f));
+    //out->xyz += glm::vec3(rotation * glm::vec4(Config.Offset, 1.f));
+
     return out;
 }
 
@@ -346,7 +388,7 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     MH_Initialize();
 
     ULog::Get().println("config struct: %p", &Config);
-    Config.Read(TARGET_NAME ".ini");
+    //Config.Read(TARGET_NAME ".ini");
 
     /* fov
         armoredcore6.exe+6D475E - 74 07                 - je armoredcore6.exe+6D4767
@@ -452,6 +494,16 @@ DWORD WINAPI MainThread(LPVOID lpParam)
 
     Hooks.push_back(
         UMinHook(
+            "PivotOffset",
+            PATTERN_FN_PIVOT_OFFSET,
+            0x15,
+            &hk_OffsetPivot,
+            (LPVOID*)(&tram_OffsetPivot)
+        )
+    );
+
+    Hooks.push_back(
+        UMinHook(
             "PivotPosInterp",
             "E8 ???????? 0F 28 00 66 0F 7F 85 B0 12 00 00 0F 28 9D E0 00 00 00 0F 29 5D 60",
             &hk_PivotPosInterp,
@@ -477,6 +529,59 @@ DWORD WINAPI MainThread(LPVOID lpParam)
     return 0;
 }
 
+#define LS_IMPL(pf, s) pf##s
+#define LS(s) LS_IMPL(L, s)
+
+DWORD WINAPI ThreadConfigRead(LPVOID lpParam)
+{
+    static constexpr size_t FILE_NOTIFY_BUFFER_SIZE = 1024;
+
+    std::string filename = TARGET_NAME ".ini";
+    std::wstring wfilename = LS(TARGET_NAME) L".ini";
+
+    Config.Read(filename);
+    std::string modDir = GetDLLDirectory(g_hModule);
+    while (1)
+    {
+        char notifybuf[FILE_NOTIFY_BUFFER_SIZE];
+        DWORD numBytes;
+        HANDLE hDir = CreateFileA(modDir.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, 0, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, 0);
+        if (ReadDirectoryChangesW(hDir, &notifybuf, FILE_NOTIFY_BUFFER_SIZE, FALSE, FILE_NOTIFY_CHANGE_LAST_WRITE, &numBytes, 0, 0))
+        {
+            FILE_NOTIFY_INFORMATION* pNotify = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(&notifybuf);
+            if (numBytes)
+            {
+                while (1)
+                {
+                    std::wstring wsName(pNotify->FileName, pNotify->FileNameLength / sizeof(WCHAR));
+                    if (wsName == wfilename)
+                    {
+                        std::string filename;
+                        std::transform(wsName.begin(), wsName.end(), std::back_inserter(filename), [](wchar_t c) {
+                            return (char)c;
+                            });
+                        ULog::Get().println("Config file changed");
+                        Sleep(300); // workaround for some editors like vscode
+                        Config.Read(modDir + "\\" + filename);
+                    }
+                    if (pNotify->NextEntryOffset == 0) break;
+                    pNotify += pNotify->NextEntryOffset;
+                }
+            }
+            else
+            {
+                ULog::Get().println("Couldn't setup config file watch");
+                break;
+            }
+        }
+    }
+
+    return 0;
+}
+
+#undef LS
+#undef LS_IMPL
+
 BOOL APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
                        LPVOID lpReserved
@@ -495,12 +600,17 @@ BOOL APIENTRY DllMain( HMODULE hModule,
             log.println("Couldn't load MinHook.x64.dll, aborting.");
             return FALSE;
         }
+        g_Lua = lua_open();
+        luaL_openlibs(g_Lua);
 
         DisableThreadLibraryCalls(hModule);
         CreateThread(0, 0, &MainThread, 0, 0, 0);
+        CreateThread(0, 0, &ThreadConfigRead, 0, 0, 0);
+
     }
     if (ul_reason_for_call == DLL_PROCESS_DETACH)
     {
+        lua_close(g_Lua);
         MH_Uninitialize();
     }
     return TRUE;
